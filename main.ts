@@ -34,6 +34,18 @@ function sha256(bytes) {
   return createHash("sha256").update(bytes).digest("hex");
 }
 
+// A complete PNG ends with a 12-byte IEND chunk (length 0, "IEND", fixed CRC).
+// Checking it catches a truncated file that still has a valid IHDR.
+function pngEndsWithIend(bytes) {
+  if (bytes.length < 12) return false;
+  const tail = bytes.subarray(bytes.length - 12);
+  return (
+    tail.readUInt32BE(0) === 0 &&
+    tail.toString("ascii", 4, 8) === "IEND" &&
+    tail.readUInt32BE(8) === 0xae426082
+  );
+}
+
 function main() {
   const here = dirname(fileURLToPath(import.meta.url));
   const sourcePath = join(here, "entry.png");
@@ -46,18 +58,26 @@ function main() {
   if (width !== SIDE || height !== SIDE) {
     fail(`entry.png is ${width}x${height}, expected ${SIDE}x${SIDE}`);
   }
+  if (!pngEndsWithIend(source)) {
+    fail("entry.png is truncated (no IEND chunk)");
+  }
 
   const outDir = process.env.MAKEFUN_OUTPUT_DIR ?? "/output";
   mkdirSync(outDir, { recursive: true });
   const targetPath = join(outDir, "entry.png");
   copyFileSync(sourcePath, targetPath);
 
-  // Verify the copy byte for byte: same size, same hash.
+  // Verify the copy byte for byte: same size, same hash — and re-parse the
+  // copied file itself, so the artifact the grader reads is validated too.
   const copied = readFileSync(targetPath);
   const sourceHash = sha256(source);
   const copiedHash = sha256(copied);
   if (copied.length !== source.length || copiedHash !== sourceHash) {
     fail("output copy does not match entry.png");
+  }
+  const [copiedWidth, copiedHeight] = pngDimensions(copied);
+  if (copiedWidth !== SIDE || copiedHeight !== SIDE || !pngEndsWithIend(copied)) {
+    fail("output copy failed PNG validation");
   }
   console.log(
     `entry.png -> ${targetPath} (${statSync(targetPath).size} bytes, ` +
